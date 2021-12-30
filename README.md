@@ -27,4 +27,5 @@ make -C ../linux M=$PWD
 Skipping BTF generation for /home/dxu/dev/scull-rs/rust_out_of_tree.ko because it's a Rust module
 
 $ sudo insmod ./scull.ko
+# TBD
 ```
