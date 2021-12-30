@@ -25,17 +25,17 @@ module! {
 }
 
 #[derive(Default)]
-struct RustFile;
+struct ScullFile;
 
 // Use a ZST to specialize the FileOpener cuz we want to implement a custom open()
-struct RustFileTag;
-impl FileOpener<RustFileTag> for RustFile {
-    fn open(_: &RustFileTag, _file: &File) -> Result<Box<Self>> {
+struct ScullFileTag;
+impl FileOpener<ScullFileTag> for ScullFile {
+    fn open(_: &ScullFileTag, _file: &File) -> Result<Box<Self>> {
         Ok(Box::try_new(Self::default())?)
     }
 }
 
-impl FileOperations for RustFile {
+impl FileOperations for ScullFile {
     kernel::declare_file_operations!(read, write, seek, ioctl);
 
     fn read(
@@ -65,7 +65,7 @@ impl FileOperations for RustFile {
     }
 }
 
-impl IoctlHandler for RustFile {
+impl IoctlHandler for ScullFile {
     type Target<'a> = &'a Self;
 
     fn read(_this: &Self, _: &File, cmd: u32, _writer: &mut UserSlicePtrWriter) -> Result<i32> {
@@ -91,7 +91,7 @@ impl KernelModule for Scull {
 
         let mut chrdev_reg = chrdev::Registration::new_pinned(name, 0, module)?;
         for _ in 0..NR_DEVS {
-            chrdev_reg.as_mut().register::<RustFile>()?;
+            chrdev_reg.as_mut().register::<ScullFile>()?;
         }
 
         Ok(Scull { _dev: chrdev_reg })
