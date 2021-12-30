@@ -6,6 +6,9 @@
 #![feature(allocator_api, global_asm)]
 
 use kernel::prelude::*;
+use kernel::{chrdev, file_operations::FileOperations};
+
+const NR_DEVS: usize = 4;
 
 module! {
     type: Scull,
@@ -15,23 +18,32 @@ module! {
     license: b"GPL v2",
 }
 
+#[derive(Default)]
+struct RustFile;
+
+impl FileOperations for RustFile {
+    kernel::declare_file_operations!();
+}
+
 struct Scull {
-    message: String,
+    _dev: Pin<Box<chrdev::Registration<NR_DEVS>>>,
 }
 
 impl KernelModule for Scull {
-    fn init(_name: &'static CStr, _module: &'static ThisModule) -> Result<Self> {
+    fn init(name: &'static CStr, module: &'static ThisModule) -> Result<Self> {
         pr_info!("Rust scull init\n");
 
-        Ok(Scull {
-            message: "on the heap!".try_to_owned()?,
-        })
+        let mut chrdev_reg = chrdev::Registration::new_pinned(name, 0, module)?;
+        for _ in 0..NR_DEVS {
+            chrdev_reg.as_mut().register::<RustFile>()?;
+        }
+
+        Ok(Scull { _dev: chrdev_reg })
     }
 }
 
 impl Drop for Scull {
     fn drop(&mut self) {
-        pr_info!("My message is {}\n", self.message);
         pr_info!("Rust scull exit\n");
     }
 }
