@@ -3,10 +3,16 @@
 //! LDD3 chapter 3 scull module reimplemented in rust
 
 #![no_std]
-#![feature(allocator_api, global_asm)]
+#![feature(allocator_api, global_asm, generic_associated_types)]
 
 use kernel::prelude::*;
-use kernel::{chrdev, file_operations::FileOperations};
+use kernel::{
+    chrdev,
+    file::File,
+    file_operations::{FileOpener, FileOperations, IoctlCommand, IoctlHandler, SeekFrom},
+    io_buffer::{IoBufferReader, IoBufferWriter},
+    user_ptr::{UserSlicePtrReader, UserSlicePtrWriter},
+};
 
 const NR_DEVS: usize = 4;
 
@@ -21,8 +27,58 @@ module! {
 #[derive(Default)]
 struct RustFile;
 
+// Use a ZST to specialize the FileOpener cuz we want to implement a custom open()
+struct RustFileTag;
+impl FileOpener<RustFileTag> for RustFile {
+    fn open(_: &RustFileTag, _file: &File) -> Result<Box<Self>> {
+        Ok(Box::try_new(Self::default())?)
+    }
+}
+
 impl FileOperations for RustFile {
-    kernel::declare_file_operations!();
+    kernel::declare_file_operations!(read, write, seek, ioctl);
+
+    fn read(
+        _this: &Self,
+        _file: &File,
+        _data: &mut impl IoBufferWriter,
+        _offset: u64,
+    ) -> Result<usize> {
+        Err(Error::ENOTSUPP)
+    }
+
+    fn write(
+        _this: &Self,
+        _file: &File,
+        _data: &mut impl IoBufferReader,
+        _offset: u64,
+    ) -> Result<usize> {
+        Err(Error::ENOTSUPP)
+    }
+
+    fn seek(_this: &Self, _file: &File, _offset: SeekFrom) -> Result<u64> {
+        Err(Error::ENOTSUPP)
+    }
+
+    fn ioctl(this: &Self, file: &File, cmd: &mut IoctlCommand) -> Result<i32> {
+        cmd.dispatch::<Self>(this, file)
+    }
+}
+
+impl IoctlHandler for RustFile {
+    type Target<'a> = &'a Self;
+
+    fn read(_this: &Self, _: &File, cmd: u32, _writer: &mut UserSlicePtrWriter) -> Result<i32> {
+        match cmd {
+            _ => Err(Error::ENOTSUPP),
+        }
+    }
+
+    fn write(_this: &Self, _: &File, cmd: u32, _reader: &mut UserSlicePtrReader) -> Result<i32> {
+        match cmd {
+            _ => Err(Error::ENOTSUPP),
+        }
+    }
 }
 
 struct Scull {
