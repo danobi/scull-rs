@@ -22,6 +22,18 @@ module! {
     author: b"Daniel Xu",
     description: b"LDD3 chapter 3 scull module",
     license: b"GPL v2",
+    params: {
+        scull_quantum: i32 {
+            default: 4000,
+            permissions: 0o444,
+            description: b"Size of scull quantum",
+        },
+        scull_qset: i32 {
+            default: 1000,
+            permissions: 0o444,
+            description: b"Number of quantums per node",
+        },
+    },
 }
 
 #[derive(Default)]
