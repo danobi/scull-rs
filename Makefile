@@ -5,5 +5,8 @@ KDIR ?= /lib/modules/`uname -r`/build
 default:
 	$(MAKE) -C $(KDIR) M=$$PWD
 
+rustfmt:
+	rustfmt *.rs
+
 clean:
 	rm -f *.ko *.mod *.mod.c *.o *.rmeta Module.symvers modules.order .*.cmd
