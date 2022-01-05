@@ -7,14 +7,13 @@
 
 use kernel::prelude::*;
 use kernel::{
-    chrdev,
-    file::File,
-    file_operations::{FileOpener, FileOperations, IoctlCommand, IoctlHandler, SeekFrom},
+    file::{File, FileFlags},
+    file_operations::{FileOperations, IoctlCommand, IoctlHandler, SeekFrom},
     io_buffer::{IoBufferReader, IoBufferWriter},
+    miscdev, mutex_init,
+    sync::{Mutex, Ref, UniqueRef},
     user_ptr::{UserSlicePtrReader, UserSlicePtrWriter},
 };
-
-const NR_DEVS: usize = 4;
 
 module! {
     type: Scull,
@@ -36,19 +35,64 @@ module! {
     },
 }
 
-#[derive(Default)]
-struct ScullFile;
+struct ScullQuantum {
+    _data: Vec<Option<Vec<u8>>>,
+}
 
-// Use a ZST to specialize the FileOpener cuz we want to implement a custom open()
-struct ScullFileTag;
-impl FileOpener<ScullFileTag> for ScullFile {
-    fn open(_: &ScullFileTag, _file: &File) -> Result<Box<Self>> {
-        Ok(Box::try_new(Self::default())?)
+struct ScullDevInner {
+    data: Vec<ScullQuantum>,
+    quantum: i32,
+    qset: i32,
+}
+
+struct ScullDev {
+    inner: Mutex<ScullDevInner>,
+}
+
+impl ScullDev {
+    fn try_new() -> Result<Ref<Self>> {
+        let inner = ScullDevInner {
+            data: Vec::new(),
+            quantum: *scull_quantum.read(),
+            qset: *scull_qset.read(),
+        };
+
+        // SAFETY: we will call mutex_init!() after this
+        let mut scull_dev = Pin::from(UniqueRef::try_new(ScullDev {
+            inner: unsafe { Mutex::new(inner) },
+        })?);
+
+        // SAFETY: `inner` is pinned when `scull_dev` is
+        let pinned = unsafe { scull_dev.as_mut().map_unchecked_mut(|s| &mut s.inner) };
+        mutex_init!(pinned, "ScullDev::inner");
+
+        Ok(scull_dev.into())
+    }
+
+    fn trim(&self) {
+        let mut inner = self.inner.lock();
+        inner.data = Vec::new();
+        inner.quantum = *scull_quantum.read();
+        inner.qset = *scull_qset.read();
     }
 }
 
+struct ScullFile {
+    _dev: Ref<ScullDev>,
+}
+
 impl FileOperations for ScullFile {
+    type OpenData = Ref<ScullDev>;
+    type Wrapper = Box<Self>;
     kernel::declare_file_operations!(read, write, seek, ioctl);
+
+    fn open(dev: &Ref<ScullDev>, file: &File) -> Result<Box<Self>> {
+        if (file.flags() & FileFlags::O_ACCMODE) == FileFlags::O_WRONLY {
+            dev.trim();
+        }
+
+        Ok(Box::try_new(ScullFile { _dev: dev.clone() })?)
+    }
 
     fn read(
         _this: &Self,
@@ -94,19 +138,19 @@ impl IoctlHandler for ScullFile {
 }
 
 struct Scull {
-    _dev: Pin<Box<chrdev::Registration<NR_DEVS>>>,
+    _dev: Pin<Box<miscdev::Registration<ScullFile>>>,
 }
 
 impl KernelModule for Scull {
-    fn init(name: &'static CStr, module: &'static ThisModule) -> Result<Self> {
+    fn init(name: &'static CStr, _: &'static ThisModule) -> Result<Self> {
         pr_info!("Rust scull init\n");
 
-        let mut chrdev_reg = chrdev::Registration::new_pinned(name, 0, module)?;
-        for _ in 0..NR_DEVS {
-            chrdev_reg.as_mut().register::<ScullFile>()?;
-        }
+        let scull_dev = ScullDev::try_new()?;
+        let scull = Scull {
+            _dev: miscdev::Registration::new_pinned(name, None, scull_dev)?,
+        };
 
-        Ok(Scull { _dev: chrdev_reg })
+        Ok(scull)
     }
 }
 
