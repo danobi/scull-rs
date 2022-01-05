@@ -8,9 +8,11 @@
 use kernel::prelude::*;
 use kernel::{
     chrdev,
-    file::File,
+    file::{AccessMode, File},
     file_operations::{FileOpener, FileOperations, IoctlCommand, IoctlHandler, SeekFrom},
     io_buffer::{IoBufferReader, IoBufferWriter},
+    mutex_init,
+    sync::Mutex,
     user_ptr::{UserSlicePtrReader, UserSlicePtrWriter},
 };
 
@@ -36,18 +38,56 @@ module! {
     },
 }
 
-#[derive(Default)]
-struct ScullFile;
+struct ScullQuantum {
+    data: Vec<Option<Vec<u8>>>,
+}
 
-// Use a ZST to specialize the FileOpener cuz we want to implement a custom open()
-struct ScullFileTag;
-impl FileOpener<ScullFileTag> for ScullFile {
-    fn open(_: &ScullFileTag, _file: &File) -> Result<Box<Self>> {
-        Ok(Box::try_new(Self::default())?)
+struct ScullFileInner {
+    data: Vec<ScullQuantum>,
+    quantum: i32,
+    qset: i32,
+}
+
+struct ScullFile {
+    inner: Mutex<ScullFileInner>,
+}
+
+impl ScullFile {
+    fn trim(&self) {
+        let mut inner = self.inner.lock();
+        inner.data = Vec::new();
+        inner.quantum = *scull_quantum.read();
+        inner.qset = *scull_qset.read();
+    }
+}
+
+impl FileOpener<()> for ScullFile {
+    fn open(_: &(), file: &File) -> Result<Pin<Box<Self>>> {
+        // XXX: this needs to be stored globally, not per-fd
+        let inner = ScullFileInner {
+            data: Vec::new(),
+            quantum: *scull_quantum.read(),
+            qset: *scull_qset.read(),
+        };
+
+        // SAFETY: we will call mutex_init!() after this
+        let mut scull_file = Pin::from(Box::try_new(ScullFile {
+            inner: unsafe { Mutex::new(inner) },
+        })?);
+        // SAFETY: `inner` is pinned when `scull_file` is
+        let pinned = unsafe { scull_file.as_mut().map_unchecked_mut(|s| &mut s.inner) };
+        mutex_init!(pinned, "ScullFile::inner");
+
+        if file.flags().access_mode() == AccessMode::WriteOnly {
+            scull_file.trim();
+        }
+
+        Ok(scull_file)
     }
 }
 
 impl FileOperations for ScullFile {
+    type Wrapper = Pin<Box<Self>>;
     kernel::declare_file_operations!(read, write, seek, ioctl);
 
     fn read(
