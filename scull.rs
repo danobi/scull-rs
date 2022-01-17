@@ -114,6 +114,7 @@ impl ScullDev {
         let s_pos: u64 = rest / quantum_size;
         let q_pos: u64 = rest % quantum_size;
 
+        // Cap writes to a single quantum
         let mut to_read = data.len() as u64;
         if to_read > (quantum_size - q_pos) {
             to_read = quantum_size - q_pos;
