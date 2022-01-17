@@ -35,14 +35,39 @@ module! {
     },
 }
 
-struct ScullQuantum {
-    _data: Vec<Option<Vec<u8>>>,
+struct ScullQset {
+    data: Vec<Vec<u8>>,
 }
 
 struct ScullDevInner {
-    data: Vec<ScullQuantum>,
+    data: Vec<ScullQset>,
     quantum: i32,
     qset: i32,
+    size: u64,
+}
+
+impl ScullDevInner {
+    /// Given the scull set index, return the scull set.
+    ///
+    /// Will allocate and initialize any missing scull sets (but not the quantums).
+    fn follow(&mut self, n: usize) -> Result<&mut ScullQset> {
+        // Resize self to have at least as many elements as the requested index
+        //
+        // Note we cannot use `Vec::try_resize()` because `Vec` does not implement
+        // `Clone` with `cfg(no_global_oom_handling)`
+        if self.data.len() < (n + 1) {
+            for _ in self.data.len()..(n + 1) {
+                let mut qset: Vec<Vec<u8>> = Vec::try_with_capacity(self.qset.try_into()?)?;
+                for _ in 0..self.qset {
+                    qset.try_push(Vec::new())?;
+                }
+
+                self.data.try_push(ScullQset { data: qset })?;
+            }
+        }
+
+        Ok(&mut self.data[n])
+    }
 }
 
 struct ScullDev {
@@ -55,6 +80,7 @@ impl ScullDev {
             data: Vec::new(),
             quantum: *scull_quantum.read(),
             qset: *scull_qset.read(),
+            size: 0,
         };
 
         // SAFETY: we will call mutex_init!() after this
@@ -75,10 +101,50 @@ impl ScullDev {
         inner.quantum = *scull_quantum.read();
         inner.qset = *scull_qset.read();
     }
+
+    fn write(&self, data: &mut impl IoBufferReader, offset: u64) -> Result<usize> {
+        let mut inner = self.inner.lock();
+
+        // Calculate offets into nested data structure
+        let qset_size: u64 = inner.qset.try_into()?;
+        let quantum_size: u64 = inner.quantum.try_into()?;
+        let itemsize: u64 = quantum_size * qset_size;
+        let item: u64 = offset / itemsize;
+        let rest: u64 = offset % itemsize;
+        let s_pos: u64 = rest / quantum_size;
+        let q_pos: u64 = rest % quantum_size;
+
+        let mut to_read = data.len() as u64;
+        if to_read > (quantum_size - q_pos) {
+            to_read = quantum_size - q_pos;
+        }
+
+        // Find quantum to write to
+        let qset: &mut ScullQset = inner.follow(item as usize)?;
+        let quantum: &mut Vec<u8> = &mut qset.data[s_pos as usize];
+        if quantum.is_empty() {
+            quantum.try_resize(quantum_size.try_into()?, 0)?;
+        }
+
+        // Read user data in
+        let slice_start: usize = q_pos as usize;
+        let slice_end: usize = (q_pos + to_read) as usize;
+        let dest = &mut quantum[slice_start..slice_end];
+        data.read_slice(dest)?;
+
+        // Update accounting
+        let new_offset = offset + to_read;
+        if inner.size < new_offset {
+            inner.size = new_offset;
+        }
+
+        // Return number of bytes read
+        Ok(to_read as usize)
+    }
 }
 
 struct ScullFile {
-    _dev: Ref<ScullDev>,
+    dev: Ref<ScullDev>,
 }
 
 impl FileOperations for ScullFile {
@@ -91,7 +157,7 @@ impl FileOperations for ScullFile {
             dev.trim();
         }
 
-        Ok(Box::try_new(ScullFile { _dev: dev.clone() })?)
+        Ok(Box::try_new(ScullFile { dev: dev.clone() })?)
     }
 
     fn read(
@@ -104,12 +170,12 @@ impl FileOperations for ScullFile {
     }
 
     fn write(
-        _this: &Self,
+        this: &Self,
         _file: &File,
-        _data: &mut impl IoBufferReader,
-        _offset: u64,
+        data: &mut impl IoBufferReader,
+        offset: u64,
     ) -> Result<usize> {
-        Err(Error::ENOTSUPP)
+        this.dev.write(data, offset)
     }
 
     fn seek(_this: &Self, _file: &File, _offset: SeekFrom) -> Result<u64> {
