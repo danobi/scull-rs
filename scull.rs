@@ -102,6 +102,50 @@ impl ScullDev {
         inner.qset = *scull_qset.read();
     }
 
+    fn read(&self, data: &mut impl IoBufferWriter, offset: u64) -> Result<usize> {
+        let mut inner = self.inner.lock();
+
+        if offset > inner.size {
+            return Ok(0);
+        }
+
+        // Do not read past end of device
+        let mut to_write = data.len() as u64;
+        if (offset + to_write) > inner.size {
+            to_write = inner.size - offset;
+        }
+
+        // Calculate offets into nested data structure
+        let qset_size: u64 = inner.qset.try_into()?;
+        let quantum_size: u64 = inner.quantum.try_into()?;
+        let itemsize: u64 = quantum_size * qset_size;
+        let item: u64 = offset / itemsize;
+        let rest: u64 = offset % itemsize;
+        let s_pos: u64 = rest / quantum_size;
+        let q_pos: u64 = rest % quantum_size;
+
+        // Find quantum to read from
+        let qset: &mut ScullQset = inner.follow(item as usize)?;
+        let quantum: &mut Vec<u8> = &mut qset.data[s_pos as usize];
+        if quantum.is_empty() {
+            // Do not fill any holes, unlike write() path
+            return Ok(0);
+        }
+
+        // Cap reads to a single quantum
+        if to_write > (quantum_size - q_pos) {
+            to_write = quantum_size - q_pos;
+        }
+
+        // Write data for user
+        let slice_start: usize = q_pos as usize;
+        let slice_end: usize = (q_pos + to_write) as usize;
+        let dest = &mut quantum[slice_start..slice_end];
+        data.write_slice(dest)?;
+
+        Ok(to_write as usize)
+    }
+
     fn write(&self, data: &mut impl IoBufferReader, offset: u64) -> Result<usize> {
         let mut inner = self.inner.lock();
 
@@ -162,12 +206,12 @@ impl FileOperations for ScullFile {
     }
 
     fn read(
-        _this: &Self,
+        this: &Self,
         _file: &File,
-        _data: &mut impl IoBufferWriter,
-        _offset: u64,
+        data: &mut impl IoBufferWriter,
+        offset: u64,
     ) -> Result<usize> {
-        Err(Error::ENOTSUPP)
+        this.dev.read(data, offset)
     }
 
     fn write(
