@@ -2,9 +2,6 @@
 
 //! LDD3 chapter 3 scull module reimplemented in rust
 
-#![no_std]
-#![feature(allocator_api, global_asm, generic_associated_types)]
-
 use kernel::prelude::*;
 use kernel::{
     file::{File, FileFlags},
